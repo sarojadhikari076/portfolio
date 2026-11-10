@@ -1,6 +1,6 @@
 'use client';
 
-import { RouterProvider, Toast } from '@heroui/react';
+import { RouterProvider } from '@heroui/react';
 import { useRouter } from 'next/navigation';
 import { ThemeProvider } from 'next-themes';
 import type { ReactNode } from 'react';
@@ -37,7 +37,6 @@ export function Providers({ children }: ProvidersProps) {
         }}
       >
         {children}
-        <Toast.Provider placement="bottom" />
       </RouterProvider>
     </ThemeProvider>
   );
