@@ -1,0 +1,8 @@
+pnpm-lock.yaml
+.next
+coverage
+playwright-report
+test-results
+.lighthouseci
+next-env.d.ts
+public
