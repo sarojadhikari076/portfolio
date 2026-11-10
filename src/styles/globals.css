@@ -56,6 +56,10 @@
   --backdrop: oklch(0% 0 0 / 0.6);
   --scrollbar-thumb: oklch(100% 0 0 / 0.14);
 
+  /* Hairlines instead of shadows: surfaces sit on the grid, they don't float above it. */
+  --surface-shadow: 0 0 0 1px var(--border);
+  --overlay-shadow: 0 0 0 1px var(--border), 0 16px 40px -16px oklch(0% 0 0 / 0.6);
+
   /* Ours, not HeroUI's. */
   --accent-ink: var(--accent);
   --grid-line: oklch(100% 0 0 / 0.04);
