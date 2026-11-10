@@ -1,0 +1,8 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  // Next.js, Vitest, Playwright, ESLint and commitlint are found by knip's plugins. MDX files import
+  // components nothing else does, so they are entries too.
+  "entry": ["content/**/*.mdx"],
+  "project": ["src/**/*.{ts,tsx}", "tests/**/*.ts", "content/**/*.mdx"],
+  "ignoreExportsUsedInFile": { "interface": true, "type": true },
+}

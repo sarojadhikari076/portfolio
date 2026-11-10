@@ -1,7 +1,7 @@
 export type Vec3 = readonly [number, number, number];
 
 /** Edges arc towards the viewer and slightly to one side, so A→B and B→A never overlap. */
-export function controlPoint(a: Vec3, b: Vec3): Vec3 {
+function controlPoint(a: Vec3, b: Vec3): Vec3 {
   const [mx, my, mz] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
   const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
   const length = Math.hypot(dx, dy) || 1;

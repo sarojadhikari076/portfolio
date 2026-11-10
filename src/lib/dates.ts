@@ -12,7 +12,7 @@ const DAY_MONTH_YEAR = new Intl.DateTimeFormat('en-GB', {
 });
 
 /** `2025-04` → `Apr 2025`. */
-export function formatMonth(isoMonth: string): string {
+function formatMonth(isoMonth: string): string {
   return MONTH_YEAR.format(new Date(`${isoMonth}-01T00:00:00Z`));
 }
 
