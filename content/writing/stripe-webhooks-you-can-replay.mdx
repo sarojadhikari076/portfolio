@@ -1,0 +1,117 @@
+---
+title: Stripe webhooks you can replay
+description: Storing each webhook once, never trusting its payload, and reconciling every ten minutes, so a payment in Mela becomes exactly one order whatever Stripe does.
+publishedAt: '2026-11-10'
+tags:
+  - payments
+  - idempotency
+  - stripe
+project: mela
+---
+
+Stripe tells you a payment succeeded by sending a webhook. It sends it at least once, sometimes twice, sometimes minutes late, and occasionally not at all. Meanwhile the buyer's browser is on the confirmation page asking the same question.
+
+In [Mela](/work/mela) all of those paths can race, and the rule is simple to state: whatever happens, one payment becomes one order. Here's how it holds.
+
+## Store it once, before doing anything
+
+The webhook endpoint verifies Stripe's signature and then does almost nothing: it records the event and answers `204`. The worker does the rest, so Stripe never waits on Mela's work. The record has a unique key on `(provider, provider_event_id)`, and the outbox event that triggers the real work is written only if the row is new:
+
+```ts title="apps/api/src/modules/payments/infrastructure/webhook-events.repository.ts"
+await this.prisma.$transaction(async (transaction) => {
+  const { count } = await transaction.webhookEvent.createMany({
+    data: { provider: PROVIDER, providerEventId, eventType, accountId, objectId },
+    skipDuplicates: true,
+  });
+
+  if (count > 0) {
+    await writeOutboxEvent(transaction, STRIPE_WEBHOOK_TOPIC, { providerEventId });
+  }
+});
+```
+
+`skipDuplicates` turns a replay into a no-op instead of a unique-violation error, and the shared transaction means a stored event always gets processed: there's no window where it's saved and its work is lost. ([The outbox post](/writing/transactional-outbox-nestjs) covers that half.)
+
+Answering fast matters too. Stripe retries a webhook that's slow to answer, so doing the work inside the request makes duplicates more likely, not less.
+
+## Don't trust the event, ask again
+
+A webhook says "payment `pi_123` succeeded". Mela doesn't take its word for it. Completing a checkout fetches the payment from Stripe and checks three things before writing anything:
+
+```ts title="apps/api/src/modules/checkout/application/checkout-completion.service.ts"
+if (account?.stripeAccountId !== stripeAccountId) {
+  this.logger.error({ paymentIntentId }, 'Payment came from the wrong connected account');
+  return 'ignored';
+}
+
+const { status, amountMinor, checkoutId } = await this.gateway.retrievePayment(
+  stripeAccountId,
+  paymentIntentId,
+);
+
+if (status !== SUCCEEDED) return 'unpaid';
+
+if (checkoutId !== record.id || amountMinor !== priceOf(record).totalMinor) {
+  this.logger.error({ paymentIntentId }, "Payment doesn't match its checkout");
+  return 'ignored';
+}
+```
+
+1. **The right account.** Payments are Stripe Connect direct charges on each organiser's own account. A payment from a different connected account is never a match.
+2. **The right amount.** The total is recalculated on the server from the checkout, in integer minor units, and compared exactly.
+3. **The right checkout.** The checkout id travels in the payment's metadata and has to agree.
+
+Because the source of truth is Stripe's current state rather than the event's contents, it doesn't matter which path asks first. The webhook, the confirmation page and the reconciliation job all call the same function.
+
+## One order, however many callers
+
+The race is settled where these things are always settled: in the database. Completing a checkout starts with a conditional update, and only the caller whose update matched writes the order:
+
+```ts title="apps/api/src/modules/checkout/infrastructure/checkouts.repository.ts"
+const { count } = await transaction.checkout.updateMany({
+  where: { id, organizationId, status: { in: ['OPEN', 'EXPIRED', 'CANCELLED'] } },
+  data: { status: 'COMPLETED' },
+});
+
+return count > 0;
+```
+
+That update, converting the holds to sales, writing the order and writing `order.paid` all share one transaction. A second caller finds the checkout already `COMPLETED`, gets `false`, and stops.
+
+Note `EXPIRED` and `CANCELLED` in that list: a payment that really happened finishes the checkout even if the hold lapsed while the card was being authorised. Whether the tickets are still there is a separate question.
+
+## When the tickets are gone
+
+If a hold expired, someone else may have bought its tickets before the late payment landed. Converting the hold then fails its capacity check, the transaction rolls back, and the buyer is refunded straight away, platform fee included:
+
+```ts title="refunding a payment that arrived after its tickets were sold"
+await this.stripe.refunds.create(
+  { payment_intent: paymentIntentId, refund_application_fee: true },
+  { stripeAccount: accountId, idempotencyKey: `late-refund-${paymentIntentId}` },
+);
+```
+
+The checkout is marked refunded and a `checkout.late_payment_refunded` event sends the buyer an email that explains what happened. It's an unhappy path, but it's honest, and nobody arrives at a gate with a ticket that doesn't exist.
+
+## Every outgoing call has an idempotency key
+
+The inbound side dedupes webhooks; the outbound side has to stop Mela's own retries from charging or refunding twice. Every call that moves money carries an idempotency key derived from what it's for: `checkout-payment-${checkoutId}-${attempt}`, `refund-${refundId}`, `late-refund-${paymentIntentId}`, `cancel-payment-${paymentIntentId}`. A retried request with the same key returns the original result instead of doing it again.
+
+## Reconciliation, for the webhook that never came
+
+Webhooks can be lost: a misconfigured endpoint, an outage on either side, a deploy at the wrong second. So every ten minutes a job asks Stripe about every checkout that started a payment at least five minutes ago and still has no order:
+
+- If the payment succeeded, it goes through the same `fromPayment` path, so an order appears. This is logged as an error, because it means a webhook went missing and that deserves an alert.
+- If it hasn't succeeded, the checkout has closed and the payment started more than an hour ago, the payment intent is cancelled, so the buyer can't pay later for tickets they no longer hold. Stripe refuses once money is moving, and those are simply asked about again next run.
+- One organiser's failure, such as Stripe refusing their account, is logged and skipped so it can't stall everyone else.
+
+The five-minute grace keeps the job from racing a webhook that's merely slow, and the shared code path means that even when they do race, there's still only one order.
+
+## The checklist I'd reuse
+
+- Verify the signature, store the event under a unique key, answer quickly.
+- Process from the stored event, in a worker, with at-least-once delivery and idempotent handlers.
+- Never trust a payload you can re-fetch. Check account, amount and reference.
+- Settle "who completes this" with a conditional update in the same transaction as the work.
+- Put an idempotency key on every outgoing call that moves money.
+- Reconcile on a schedule, through the same code path, and alert when reconciliation finds something.

@@ -1,0 +1,148 @@
+---
+title: Selling the last ticket exactly once
+description: How Mela keeps a hundred buyers from overselling one ticket, with a conditional UPDATE, a CHECK constraint and no locks held across a request.
+publishedAt: '2026-11-10'
+tags:
+  - postgres
+  - concurrency
+  - system-design
+project: mela
+---
+
+A festival puts fifty tickets on sale at noon. At 12:00:03 there's one left and three hundred people in the checkout. Whatever the code does next, it has to sell that ticket to exactly one of them.
+
+This is the inventory design in [Mela](/work/mela), the ticketing platform I'm building, and the reasoning behind each piece.
+
+## The race everyone writes first
+
+The obvious version reads the remaining capacity, checks it, then writes:
+
+```ts title="the version that oversells"
+const pool = await db.inventoryPool.findUnique({ where: { id: poolId } });
+
+if (pool.capacity - pool.held - pool.sold >= quantity) {
+  await db.inventoryPool.update({
+    where: { id: poolId },
+    data: { held: { increment: quantity } },
+  });
+}
+```
+
+Two requests read `held = 49` at the same moment, both see one ticket left, and both write. The increment itself is atomic, so the row ends up at `held = 51` on a pool of fifty. Nothing errored. You find out at the gate.
+
+The usual fixes each cost something:
+
+- **`SELECT … FOR UPDATE`** works, but holds a row lock across application code. Under a spike, every buyer for that pool queues behind whoever is slowest.
+- **`SERIALIZABLE` isolation** works too, and turns the race into serialisation failures you have to retry. Retries under load are their own spike.
+- **A Redis counter in front** moves the problem to keeping two stores in agreement.
+
+## One statement, check and write together
+
+Mela never reads capacity in order to change it. Taking a hold is a single conditional `UPDATE`, and the condition is the check:
+
+```ts title="apps/api/src/modules/inventory/infrastructure/holds.repository.ts"
+const updated = await transaction.$executeRaw`
+  UPDATE inventory_pool
+  SET held = held + ${quantity}
+  WHERE id = ${poolId}::uuid
+    AND event_id = ${eventId}::uuid
+    AND organization_id = ${organizationId}::uuid
+    AND held + sold + ${quantity} <= capacity
+`;
+
+if (updated === 0) {
+  throw await this.whyNot(transaction, { organizationId, eventId, poolId });
+}
+```
+
+PostgreSQL evaluates the `WHERE` clause against the latest committed version of the row and takes the row lock for the length of one statement, not one request. Two buyers racing for the last ticket are serialised by the row lock; the second one re-checks the condition against the first one's write, matches nothing, and gets `0` back. That zero is the whole protocol.
+
+Only when the update fails does the code read the pool, and only to explain the failure: was it the wrong event, or has the pool simply run out? The buyer gets "2 left" instead of a generic error.
+
+<Callout label="tenancy">
+
+Raw SQL skips the tenant-scoped Prisma client, so every statement names the organisation itself. A query that forgets is caught by the same route-level authorisation tests as everything else.
+
+</Callout>
+
+## A constraint as the last line
+
+Application code has bugs. So the table refuses to be oversold, whatever code path writes to it:
+
+```sql title="packages/db/prisma/migrations/…_ticket_types_and_pools/migration.sql"
+ALTER TABLE "inventory_pool"
+  ADD CONSTRAINT "pool_held_not_negative" CHECK ("held" >= 0),
+  ADD CONSTRAINT "pool_sold_not_negative" CHECK ("sold" >= 0),
+  ADD CONSTRAINT "pool_not_oversold" CHECK ("held" + "sold" <= "capacity");
+```
+
+If a future change ever writes `held` without the guard, the transaction fails instead of selling a ticket that doesn't exist. I'd rather explain a 500 than a double-booked seat.
+
+## Holds, and giving them back
+
+Capacity moves through three states: available, held while someone is paying, and sold. A hold is a row with a fifteen-minute deadline:
+
+- **One active hold per checkout and pool.** A partial unique index on `(checkout_id, pool_id) WHERE status = 'ACTIVE'` means a double-clicked button or a retried request can't hold the same capacity twice.
+- **Releasing is idempotent.** The status changes first and capacity comes back from the rows that changed, so a second release finds nothing to give back.
+- **Expiry is a sweep.** A worker runs every thirty seconds and claims due holds in batches:
+
+```sql title="claiming expired holds"
+UPDATE hold
+SET status = 'EXPIRED', updated_at = now()
+WHERE id IN (
+  SELECT id FROM hold
+  WHERE status = 'ACTIVE' AND expires_at <= $1
+  ORDER BY expires_at
+  LIMIT 500
+  FOR UPDATE SKIP LOCKED
+)
+RETURNING checkout_id, pool_id, quantity
+```
+
+`SKIP LOCKED` lets two sweepers overlap without waiting on each other: each claims rows the other hasn't. The partial index `ON hold (expires_at) WHERE status = 'ACTIVE'` keeps the scan small, because finished holds drop out of it.
+
+## Deadlocks, avoided by ordering
+
+A basket can hold several pools: a weekend ticket and a camping pass, say. Two baskets touching the same two pools in opposite orders will deadlock. PostgreSQL detects it and kills one transaction, which is correct and still a bad experience. So every code path that changes capacity sorts by pool id first:
+
+```ts title="returning capacity in the same order holds take it"
+for (const [poolId, quantity] of [...totals].sort(([a], [b]) => (a < b ? -1 : 1))) {
+  await transaction.$executeRaw`
+    UPDATE inventory_pool SET held = held - ${quantity} WHERE id = ${poolId}::uuid
+  `;
+}
+```
+
+Same order everywhere, no cycle, no deadlock.
+
+## When payment arrives late
+
+The awkward case: a buyer's hold expires while their card is being authorised, the sweeper gives the ticket back, and then the payment succeeds. Converting a hold to a sale handles both branches in the purchase's own transaction. An active hold moves from `held` to `sold`. An expired one takes the capacity again with the same guard as a new hold:
+
+```sql title="taking a lapsed hold back, if the tickets are still there"
+UPDATE inventory_pool SET sold = sold + $2
+WHERE id = $1 AND held + sold + $2 <= capacity
+```
+
+If that matches nothing, someone else bought the tickets in the meantime. The whole purchase rolls back and the payment is refunded automatically. That flow is in [the post on Stripe webhooks](/writing/stripe-webhooks-you-can-replay).
+
+## Proving it
+
+Reasoning about concurrency is necessary and not enough. Mela's repository has a k6 script that creates an event with one ticket, sends a hundred virtual buyers at it at once, and sets thresholds that fail the run unless exactly one hold succeeds and ninety-nine are refused:
+
+```js title="load-tests/oversell.js"
+thresholds: {
+  tickets_held: [`count==${CAPACITY}`],
+  tickets_refused: [`count==${BUYERS - CAPACITY}`],
+  unexpected_responses: ['count==0'],
+},
+```
+
+The same races run on every CI build against a real PostgreSQL through Testcontainers. Two of the test names say it best: _gives 100 buyers exactly 1 place for the last ticket_, and _survives baskets that name the same pools in opposite orders_. A refactor that brings back a read-then-write, or loses the ordering, fails before it merges.
+
+## What I'd take to another system
+
+- If a rule can be expressed in the `WHERE` clause of the write, put it there. One round trip, no lock held across your code.
+- Back the rule with a constraint, so the database enforces it even for code you haven't written yet.
+- Order multi-row updates the same way everywhere.
+- Test the race itself, not just the happy path, and test it against the real database.

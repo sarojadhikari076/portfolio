@@ -1,0 +1,56 @@
+---
+title: Migrating 50k lines of JavaScript to TypeScript without a feature freeze
+description: How I'd run a large JavaScript to TypeScript migration while the team keeps shipping. Leaf modules first, types at the boundaries, and a ratchet so it only moves forward.
+publishedAt: '2026-11-10'
+tags:
+  - typescript
+  - refactoring
+  - developer-experience
+draft: true
+---
+
+At IPG Automotive I migrated more than 50,000 lines of JavaScript to TypeScript while features kept shipping, and runtime errors went down. The codebase is private, so this is the approach rather than the code.
+
+## Don't stop the line
+
+A migration that needs a freeze never gets scheduled. The whole plan has to work one pull request at a time, with JavaScript and TypeScript living side by side for as long as it takes.
+
+```json title="tsconfig.json, during the migration"
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "noEmit": true
+  }
+}
+```
+
+`allowJs` lets TypeScript files import JavaScript ones and the other way round. Keeping `strict` on from the first day means every converted file is converted properly, instead of becoming a second migration later.
+
+## Leaves first
+
+Convert the modules nothing else depends on: utilities, constants, pure functions. They're small, they have no unconverted imports to fight, and every file converted gives the next layer up real types to lean on. Working from the leaves towards the entry points means each step makes the next one easier, not harder.
+
+## Types at the boundaries
+
+The biggest wins aren't inside functions. They're where data enters: HTTP request bodies, environment variables, queue messages, third-party responses. A type there is a claim, so it should be checked at runtime too:
+
+```ts title="parsing at the edge"
+const createOrderBody = z.object({
+  customerId: z.uuid(),
+  items: z.array(z.object({ sku: z.string(), quantity: z.int().positive() })).min(1),
+});
+
+export type CreateOrderBody = z.infer<typeof createOrderBody>;
+```
+
+One schema gives both the runtime check and the static type, so they can't drift apart.
+
+## A ratchet, not a target
+
+Count what's left and make it only go down: the number of `.js` files, and the number of `any`s and `@ts-expect-error` comments in TypeScript ones. A CI step that fails when a count rises lets the migration move at whatever pace the team has, without ever sliding back.
+
+## Teach the pattern, not the syntax
+
+The part people struggle with is rarely syntax. It's modelling: discriminated unions instead of optional fields that are only sometimes set, narrowing instead of casting. That's what I mentored on through code review, and reviewing the first conversions in each area closely is where the time pays back.

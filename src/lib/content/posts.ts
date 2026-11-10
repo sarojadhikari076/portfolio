@@ -7,11 +7,15 @@ const showDrafts = process.env.NODE_ENV === 'development';
 
 let cache: Post[] | undefined;
 
-/** Newest first. Drafts appear only in development. */
+/** Newest first, then by title. Drafts appear only in development. */
 export function getPosts(): Post[] {
   cache ??= readCollection('writing', postFrontmatter)
     .filter((post) => showDrafts || !post.frontmatter.draft)
-    .sort((a, b) => b.frontmatter.publishedAt.getTime() - a.frontmatter.publishedAt.getTime());
+    .sort(
+      (a, b) =>
+        b.frontmatter.publishedAt.getTime() - a.frontmatter.publishedAt.getTime() ||
+        a.frontmatter.title.localeCompare(b.frontmatter.title),
+    );
 
   return cache;
 }

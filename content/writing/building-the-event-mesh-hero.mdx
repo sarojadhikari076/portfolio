@@ -1,0 +1,96 @@
+---
+title: An event-mesh hero that costs nothing when you're not looking
+description: How this site's 3D hero is built. Mela's real topology as data, a pure simulation with tests, a store outside React, and a renderer that loads late and stops when it's off screen.
+publishedAt: '2026-11-10'
+tags:
+  - three-js
+  - react
+  - performance
+---
+
+The hero on this site's home page is a live diagram of [Mela's](/work/mela) event flow. Its nodes are Mela's real apps, modules and infrastructure, and the packets follow the paths a purchase, an expired hold, a door scan and a refund actually take, labelled with the topics the code publishes. Hover a node to see what it does; click one, or use the buttons, to send its flow through.
+
+I wanted the first thing on the page to show how I think about systems rather than say it. I also didn't want a portfolio about performance to open with 250 KB of three.js blocking the headline. This is how both hold.
+
+## The topology is data
+
+Everything the hero knows lives in one file of plain objects: seventeen nodes with a layer, a hand-placed position and a one-line description, and four flows made of stages:
+
+```ts title="src/features/hero/topology.ts"
+[hop('checkout', 'orders', 'holds → sold, order written')],
+[
+  hop('orders', 'postgres', 'order.paid in the same transaction'),
+  hop('checkout', 'live', 'signal orders'),
+],
+[hop('postgres', 'relay', 'outbox_event order.paid'), hop('live', 'dashboard', 'SSE · orders')],
+```
+
+Hops in the same stage travel together, and a stage leaves when the one before it lands. The edges drawn on screen are derived from the flows, so there's no line in the picture that no request ever takes. The positions are hand-placed rather than computed by a force simulation: a picture that's the same on every load reads better than one that settles somewhere new each time.
+
+## The simulation is a pure function
+
+Where every packet is at a given moment depends only on when each flow started and the current time:
+
+```ts title="src/features/hero/simulation.ts"
+export function packetsAt(dispatches: readonly Dispatch[], now: number): Packet[] {
+  const packets: Packet[] = [];
+
+  for (const { id, flow, startedAt } of dispatches) {
+    const elapsed = now - startedAt;
+    if (elapsed < 0) continue;
+
+    const index = Math.floor(elapsed / STAGE_MS);
+    const within = elapsed - index * STAGE_MS;
+    const stage = flow.stages[index];
+    if (!stage || within > HOP_MS) continue;
+
+    for (const { from, to } of stage) {
+      packets.push({ dispatchId: id, from, to, progress: within / HOP_MS });
+    }
+  }
+
+  return packets;
+}
+```
+
+Because it's pure, it's tested without a browser, a canvas or a clock. The tests check that every flow only routes between nodes that exist, that every node is reachable so every click does something, that each hop is logged exactly once across consecutive frames, and that ambient traffic never runs more than two flows at a time. Ambient traffic uses a seeded random number generator, so a failing test fails the same way every time.
+
+## A store outside React
+
+The canvas renders at sixty frames a second. The event log underneath it should re-render when a hop lands, a few times a second at most. So the state lives in a small store outside React:
+
+- The canvas calls `tick(now)` once per frame.
+- The store works out which hops landed since the last tick and publishes a new snapshot only if something did.
+- The log subscribes with `useSyncExternalStore`, so React only hears about it when there's something new to show.
+
+Without the canvas, for reduced motion or no WebGL, nothing calls `tick`. Pressing a flow button then starts a 100 ms timer that drives the same store and lights the edges on the SVG version instead, and stops when the flow finishes.
+
+## The frame loop doesn't belong to React
+
+My first version mutated three.js buffers inside the component. It worked, and the React Compiler's lint rules rejected it, rightly: a memoised value being written to on every frame is exactly the kind of thing the compiler assumes doesn't happen.
+
+So every buffer the loop mutates now lives in a plain class, `MeshScene`. It owns the edge colours, the eased glow per edge and per node, the packet buffer and the scratch objects that keep the loop from allocating. The React component creates it once, hands it the refs, and calls `scene.update(frame)` from `useFrame`. React describes the scene; the class animates it.
+
+The whole scene is four draw calls: one `LineSegments` buffer for every edge, an instanced mesh for the nodes, a `Points` buffer with a small shader for the packets and their trails, and an invisible instanced mesh of larger spheres so a node is easy to hit with a finger. Node labels are DOM elements, positioned each frame by projecting the node through the camera and writing a transform directly, so the text stays sharp and React isn't involved.
+
+## The first paint is an SVG of the same thing
+
+The server renders the hero as an SVG: the same topology, projected through the same camera angles with a few lines of maths instead of three.js. It costs no JavaScript to show, so it can't hold up the headline, and it plays three roles:
+
+1. **The first paint.** The page is readable and the diagram is there before any script runs.
+2. **The poster.** When the canvas renders its first frame it fades in over the SVG, which then fades out.
+3. **The fallback.** With reduced motion, no WebGL2, or data saver switched on, the SVG is the whole hero. The flow buttons still work.
+
+## Loading late and stopping early
+
+- **three.js loads only on the home page**, with `next/dynamic` and `ssr: false`, once the browser reports an idle moment after load. In this build that chunk is about 245 KB gzipped, none of it on the critical path.
+- **The render loop stops** when the hero scrolls out of view or the tab is hidden. An `IntersectionObserver` and the page visibility API switch R3F's `frameloop` to `'never'`, so an open tab in the background uses no GPU at all.
+- **The pixel ratio adapts.** It starts at 1.5 and `PerformanceMonitor` moves it between 1 and 1.75 depending on the frame rate the device actually manages.
+
+## Accessibility
+
+The canvas is `aria-hidden`; a diagram that changes several times a second isn't something to read aloud. Everything it does is also available as four real buttons, so a keyboard user can send the same flows. The visible log isn't a live region, because ambient traffic would talk over everything. Instead, a separate polite live region announces only the flows the reader started, once each finishes.
+
+## What it costs
+
+On this build, the home page's initial JavaScript is about 236 KB gzipped, against about 229 KB on a page with no hero. The hero itself adds about 8 KB up front, plus the 245 KB three.js chunk that loads once the page is idle. The rest is React, Next.js, and the HeroUI controls that are on every page.

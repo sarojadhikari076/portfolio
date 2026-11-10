@@ -1,0 +1,114 @@
+---
+title: A transactional outbox in a NestJS modular monolith
+description: Why Mela writes every domain event in the same transaction as the change, and how a relay, BullMQ job ids and idempotent handlers make delivery safe.
+publishedAt: '2026-11-10'
+tags:
+  - event-driven
+  - nestjs
+  - postgres
+project: mela
+---
+
+When a buyer pays in [Mela](/work/mela), three things have to happen: the checkout becomes an order, the tickets are issued, and an email goes out. The first is a database write. The other two are slow, can fail, and shouldn't make the buyer wait.
+
+So the order is written in the request and the rest happens in a worker. That split is where systems quietly lose work.
+
+## The dual write
+
+The tempting version writes the order, then queues a job:
+
+```ts title="the version that loses events"
+await prisma.order.create({ data: order });
+await queue.add('order.paid', { orderId: order.id });
+```
+
+If the process dies between those two lines, the order exists and the job doesn't. The buyer has paid and will never get their tickets. Swap the order of the lines and you get the opposite failure: a job for an order that rolled back.
+
+There's no ordering of two independent writes that survives a crash between them. The fix is to make it one write.
+
+## Write the event with the change
+
+Mela has an `outbox_event` table, and the event is a row written in the caller's transaction:
+
+```ts title="apps/api/src/core/outbox/outbox.ts"
+export async function writeOutboxEvent(
+  transaction: Prisma.TransactionClient,
+  topic: string,
+  payload: Prisma.InputJsonObject,
+): Promise<void> {
+  await transaction.outboxEvent.create({ data: { topic, payload } });
+}
+```
+
+The function takes a transaction client, not the Prisma service, so it can't be called outside one. Completing a checkout converts the holds, writes the order, records its timeline entry and writes `order.paid` in a single `$transaction`. Either all of it commits or none of it does.
+
+The table is deliberately small: `id`, `topic`, a JSON `payload`, `created_at` and a nullable `published_at`. A partial index on `created_at WHERE published_at IS NULL` means finding pending work stays cheap however many published rows are kept around.
+
+## The relay
+
+A worker process runs a relay every five seconds. It claims up to a hundred unpublished rows, puts them on a BullMQ queue and marks them published, all in one transaction:
+
+```ts title="apps/api/src/core/outbox/outbox-relay.service.ts"
+const events = await transaction.$queryRaw<PendingEvent[]>`
+  SELECT id, topic, payload
+  FROM outbox_event
+  WHERE published_at IS NULL
+  ORDER BY created_at
+  LIMIT ${OUTBOX_BATCH_SIZE}
+  FOR UPDATE SKIP LOCKED
+`;
+
+await this.queue.addBulk(
+  events.map(({ id, topic, payload }) => ({
+    name: topic,
+    data: { topic, payload },
+    opts: {
+      jobId: id,
+      attempts: RETRY_ATTEMPTS,
+      backoff: { type: 'exponential', delay: RETRY_DELAY_MS },
+    },
+  })),
+);
+```
+
+Failed jobs retry five times, starting five seconds apart and backing off exponentially. Two details carry the weight:
+
+- **`SKIP LOCKED`** means a second relay, during a deploy for instance, takes different rows instead of waiting or double-publishing.
+- **The row id is the job id.** If the relay crashes after `addBulk` and before the update commits, the rows are still unpublished and get queued again. BullMQ refuses a second job with an id it already has, so nothing is duplicated.
+
+## Consumers
+
+Modules subscribe to topics through a small registry. A topic can have several consumers: when a hold expires, checkout marks the checkout expired and promotions gives back any code it was holding.
+
+```ts title="apps/api/src/core/outbox/domain-events.processor.ts"
+const results = await Promise.allSettled(handlers.map((handler) => handler(payload)));
+const failure = results.find((result) => result.status === 'rejected');
+
+if (failure) {
+  throw failure.reason;
+}
+```
+
+One consumer failing doesn't stop the others. It fails the job, BullMQ retries it with backoff, and the retry runs every consumer again. That's only safe because of the rule that makes the whole design work.
+
+## Every handler is idempotent
+
+An outbox gives you at-least-once delivery, never exactly-once. So a handler has to produce the same result whether it sees an event once or three times:
+
+- **State changes are conditional.** Completing a checkout updates it only `WHERE status IN ('OPEN', 'EXPIRED', 'CANCELLED')`, and only the caller whose update matched carries on. A second delivery matches nothing and stops.
+- **Side effects are marked as they happen.** The ticket email records `email_sent_at`; sending to each attendee marks each ticket, so a retry only sends what didn't go.
+- **Payloads are parsed, not trusted.** Handlers validate their payload with Zod, so a malformed event fails loudly instead of half-working.
+
+## The numbers that set the concurrency
+
+BullMQ processes one job at a time by default. The relay can offer twenty jobs a second, a hundred every five seconds, and a job is a database write and usually an email, roughly 150 to 300 ms. One at a time drains three to seven a second, so during an on-sale the queue grows for as long as the sale lasts.
+
+The domain events queue runs ten at a time, which drains 33 to 66 a second and stays ahead of the relay. That's safe at that width only because delivery is already at-least-once and every consumer is idempotent.
+
+## Housekeeping
+
+Published rows are a debugging record, not a store, and some payloads contain personal data. A daily job deletes published events older than seven days, in batches of five thousand so it never holds one long transaction. Unpublished rows are never touched, however old: one of those is work the relay still owes.
+
+## Why not Kafka, or change data capture?
+
+At work I've introduced Kafka for asynchronous processing across services, and it's the right tool when there are many services, many consumers and independent teams. Mela is one service, one database and one engineer. An outbox table and a Redis queue give the guarantee that matters, nothing lost between the write and the work, with infrastructure I already run. If Mela ever needs streaming to other systems, the outbox is also the natural thing to point change data capture at.

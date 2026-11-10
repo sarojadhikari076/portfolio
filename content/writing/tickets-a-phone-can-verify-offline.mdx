@@ -1,0 +1,109 @@
+---
+title: Tickets a phone can verify offline
+description: Ed25519 signatures derived per event, WebCrypto on the scanner, an encrypted IndexedDB vault and a twelve-hour window. How Mela's door app checks tickets in a field with no signal.
+publishedAt: '2026-11-10'
+tags:
+  - cryptography
+  - offline
+  - pwa
+project: mela
+---
+
+Festival gates are where mobile signal goes to die. Thousands of people arrive in the same hour, the nearest mast is overloaded, and the door staff's phones show one bar or none. A scanner that needs the server to say yes is a queue that doesn't move.
+
+[Mela's](/work/mela) door app is an installable PWA that keeps scanning with no network at all. That needs three things: a ticket the phone can check by itself, data on the phone that's safe if the phone is lost, and a way to reconcile two gates that both said yes.
+
+## A ticket is a signature
+
+A Mela ticket's QR code carries a credential in four dot-separated parts:
+
+```text title="the credential format"
+tp1.<ticket id>.<key id>.<Ed25519 signature over "tp1.<ticket id>.<key id>">
+```
+
+The version prefix means the format can change without breaking tickets already issued, and the key id means keys can rotate the same way. Ed25519 signatures are 64 bytes, so the whole credential stays small enough for a QR code a cheap phone camera reads in poor light.
+
+## Keys that are never stored
+
+Each event gets its own signing key, so a leak is limited to one event. And the private keys don't exist anywhere at rest: each is derived on demand from one server secret with HKDF, using the event id as salt:
+
+```ts title="apps/api/src/modules/ticketing/domain/ticket-credential.ts"
+/** Worked out rather than stored, so a database backup can't forge a ticket. */
+function privateKeyFor(secret: string, eventId: string, keyId: string) {
+  const seed = hkdfSync('sha256', secret, eventId, `ticket-signing:${keyId}`, SEED_BYTES);
+
+  return createPrivateKey({
+    key: Buffer.concat([PKCS8_PREFIX, Buffer.from(seed)]),
+    format: 'der',
+    type: 'pkcs8',
+  });
+}
+```
+
+Node's crypto doesn't take a raw Ed25519 seed directly, so the 32 derived bytes are wrapped in the fixed PKCS#8 prefix for Ed25519. The result is deterministic: the same secret, event and key id always give the same key, so nothing needs to be saved, and someone holding a copy of the database still can't mint a ticket.
+
+## Verification on the phone
+
+When a device opens an event for scanning, it downloads a manifest: the tickets, the gates and the event's **public** keys. Checking a scan is the same test the API makes, in WebCrypto:
+
+```ts title="apps/door/src/lib/verify.ts"
+const isGenuine = await crypto.subtle.verify(
+  { name: 'Ed25519' },
+  await importKey(publicKey),
+  fromBase64Url(signature),
+  new TextEncoder().encode(`${VERSION}.${ticketId}.${keyId}`),
+);
+
+return isGenuine ? ticketId : null;
+```
+
+Imported keys are cached per public key, so scanning a queue doesn't re-import on every ticket. And because only public keys are on the device, a lost phone can check tickets but never create one.
+
+A valid signature isn't the whole answer. The offline judge then applies the same rules as the server: the ticket is in the manifest and not voided, this gate accepts its ticket type, it's inside its entry window, and this device hasn't already let it in. A yes is queued for the server; the server has the last word when the phone syncs.
+
+## What lives on the device, and what that protects against
+
+The manifest has names in it, and the scan queue is the record of who came in. Both are stored in IndexedDB encrypted with AES-GCM under a key made on the device:
+
+```ts title="apps/door/src/lib/vault.ts"
+const made = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
+  'encrypt',
+  'decrypt',
+]);
+```
+
+The `false` makes it non-extractable: page code can use the key but never read its bytes. I want to be precise about the threat model here, because it's easy to overclaim. This keeps the data unreadable to someone who copies the browser's files off a device. It does **not** protect against someone holding the unlocked phone with the app open, because the app can decrypt by design. Being clear about that is worth more than a vague "encrypted at rest".
+
+## A window, not a licence
+
+Offline can't mean forever. A device keeps scanning offline for twelve hours after it last reached the server, and never past the manifest's own expiry:
+
+```ts title="apps/door/src/lib/door-state.ts"
+export const OFFLINE_GRACE_MS = 12 * 60 * 60 * 1000;
+
+export function canScanOffline(state: DoorState, now: Date): boolean {
+  return (
+    now.getTime() - Date.parse(state.lastContactAt) < OFFLINE_GRACE_MS &&
+    now.getTime() < Date.parse(state.manifest.validUntil)
+  );
+}
+```
+
+Twelve hours covers a long festival day with no signal, and stops a phone that's been in a drawer since last weekend from admitting anyone with a stale list.
+
+## When two gates both said yes
+
+Two phones, both offline, can admit the same ticket. Offline, neither can know. So the conflict is settled when they sync, by the database:
+
+- A partial unique index allows one admission per ticket per occurrence, among scans that haven't been voided. Whichever admission reaches the database first is the one that counts.
+- The other is recorded as a conflict rather than dropped, and conflicts are counted on the event's check-in board next to admissions per gate.
+
+That's the honest trade-off of offline-first: you can't prevent a duplicate you can't see, but you can make sure every one is noticed, and that the count of people inside is never double.
+
+## What I'd carry to another offline system
+
+- Make the thing you verify self-contained: a signature plus public keys beats a lookup you can't make.
+- Derive secrets you'd otherwise have to store and protect.
+- Encrypt local data with a non-extractable key, and write down exactly what that does and doesn't protect.
+- Put a clock on offline trust.
+- Let the server decide conflicts, and record them instead of hiding them.

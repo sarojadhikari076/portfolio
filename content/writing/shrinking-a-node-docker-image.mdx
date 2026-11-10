@@ -1,0 +1,68 @@
+---
+title: Taking a Node.js image from 1.2 GB to 340 MB
+description: The checklist I use to shrink a Node.js service's Docker image, in the order that usually saves the most, with how to find where the bytes are first.
+publishedAt: '2026-11-10'
+tags:
+  - docker
+  - node
+  - devops
+draft: true
+---
+
+At IPG Automotive I took one of our service images from 1.2 GB to 340 MB, which made builds and deploys noticeably faster. That Dockerfile isn't mine to publish, so this is the method rather than the diff, in the order that usually pays off most.
+
+## Find the bytes before changing anything
+
+Guessing wastes time. Two commands tell you where the size is:
+
+```sh
+docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' my-service:latest
+docker run --rm -it --entrypoint sh my-service:latest -c 'du -sh /app/* /app/node_modules/* | sort -h | tail -20'
+```
+
+The first shows which instruction added each layer. The second shows what's inside `node_modules` once it's installed. Usually the answer is one of three things: the base image, build tooling that shipped by accident, and dev dependencies.
+
+## 1. Build in one stage, run in another
+
+A multi-stage build compiles TypeScript with everything it needs, then copies only the output into a clean image:
+
+```dockerfile
+FROM node:24-slim AS build
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build && pnpm prune --prod
+
+FROM node:24-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app/package.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+USER node
+CMD ["node", "dist/main.js"]
+```
+
+The compiler, the test runner, type definitions and source maps you don't serve all stay in the build stage.
+
+## 2. Production dependencies only
+
+`pnpm prune --prod` (or `npm ci --omit=dev`) after the build removes everything under `devDependencies`. It's worth auditing the split while you're there: a linter or a test library in `dependencies` ships to production on every deploy. In a monorepo, `pnpm deploy` or `turbo prune` produce a folder with just one app and the packages it uses.
+
+## 3. Pick the base deliberately
+
+- `node:24` is a full Debian with compilers and headers, often around a gigabyte on its own.
+- `node:24-slim` is Debian without the build toolchain and is my default runtime base.
+- `node:24-alpine` is smaller again, but it uses musl instead of glibc, and native modules either need a musl build or a compile step. Measure before choosing it, because the bytes saved can be lost to debugging.
+- Distroless images remove the shell as well, which is good for attack surface and inconvenient when you need to look inside a running container.
+
+## 4. Keep the context and the layers clean
+
+- A `.dockerignore` that excludes `.git`, `node_modules`, coverage, logs and local env files stops them being sent to the daemon and copied in by a broad `COPY . .`.
+- Copy the manifest and lockfile before the source, so the dependency layer is cached until dependencies actually change.
+- Clean package manager caches in the same `RUN` that created them. A file deleted in a later layer still exists in the earlier one.
+
+## 5. Check it stays small
+
+An image that was trimmed once grows back. Printing the image size in CI, and failing above a budget, keeps it honest without anyone having to remember.

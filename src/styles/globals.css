@@ -222,6 +222,24 @@
     @apply rounded-none border-y border-border bg-surface px-4 py-4 text-[0.8125rem] leading-6 sm:rounded-sm sm:border;
   }
 
+  /* Components embedded in MDX (diagrams, callouts) opt out of the article's list and text styles. */
+  .typography-prose .not-prose :is(ul, ol) {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .typography-prose .not-prose :is(li, p) {
+    margin: 0;
+    font-size: inherit;
+    line-height: inherit;
+  }
+
+  /* Ligatures turn `<=` into `≤`, which is not what the source says. */
+  .typography-prose :is(pre, code) {
+    font-variant-ligatures: none;
+  }
+
   .typography-prose pre code {
     @apply bg-transparent p-0 text-[inherit];
   }
