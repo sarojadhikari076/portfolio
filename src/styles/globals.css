@@ -1,5 +1,35 @@
+/*
+ * HeroUI à la carte: the base, the theme and only the components this site renders. The full
+ * stylesheet is 500 KB of CSS, all of it render-blocking, for a site that uses fifteen
+ * components. Shared pieces come first, as HeroUI's own index orders them, so components that
+ * build on them can override. A component added later needs its line here, or it renders unstyled.
+ */
+@layer theme, base, components, utilities;
+
 @import 'tailwindcss';
-@import '@heroui/styles';
+@import '@heroui/styles/base' layer(base);
+@import '@heroui/styles/base/overlay-motion.css' layer(base);
+@import '@heroui/styles/base/scrollbar.css' layer(base);
+@import '@heroui/styles/themes/default';
+@import '@heroui/styles/utilities';
+@import '@heroui/styles/variants';
+
+@import '@heroui/styles/components/close-button.css' layer(components);
+@import '@heroui/styles/components/header.css' layer(components);
+@import '@heroui/styles/components/link.css' layer(components);
+@import '@heroui/styles/components/button.css' layer(components);
+@import '@heroui/styles/components/toggle-button.css' layer(components);
+@import '@heroui/styles/components/toggle-button-group.css' layer(components);
+@import '@heroui/styles/components/list-box-item.css' layer(components);
+@import '@heroui/styles/components/list-box-section.css' layer(components);
+@import '@heroui/styles/components/list-box.css' layer(components);
+@import '@heroui/styles/components/card.css' layer(components);
+@import '@heroui/styles/components/kbd.css' layer(components);
+@import '@heroui/styles/components/typography.css' layer(components);
+@import '@heroui/styles/components/search-field.css' layer(components);
+@import '@heroui/styles/components/tooltip.css' layer(components);
+@import '@heroui/styles/components/modal.css' layer(components);
+@import '@heroui/styles/components/drawer.css' layer(components);
 
 @custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
 
@@ -96,7 +126,9 @@
   --backdrop: oklch(0% 0 0 / 0.35);
   --scrollbar-thumb: oklch(0% 0 0 / 0.16);
 
-  --accent-ink: oklch(53.1% 0.119 65.1);
+  --accent-ink: oklch(50% 0.115 65);
+  /* HeroUI mixes its soft-accent text from the fill colour, which is too pale on paper. */
+  --accent-soft-foreground: var(--accent-ink);
   --grid-line: oklch(0% 0 0 / 0.05);
   --scene-edge: oklch(80% 0.01 90);
   --scene-node: oklch(48.5% 0.012 267.3);

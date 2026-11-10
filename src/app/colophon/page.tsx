@@ -93,6 +93,9 @@ export default function ColophonPage() {
       <Section id="budget" index="03" title="What it costs">
         <dl className="divide-y divide-separator">
           {[
+            ['Lighthouse, mobile', '97 on the home page and 99 elsewhere; 100 for accessibility, best practices and SEO'],
+            ['Largest paint', 'about 1.7 s on a simulated mid-range phone, with no layout shift'],
+            ['CSS', '19 KB gzipped: only the HeroUI components the site renders'],
             ['JavaScript, any page', 'about 229 KB gzipped, most of it React and Next.js'],
             ['JavaScript, home page', 'about 236 KB up front, plus 245 KB of three.js once idle'],
             ['Render loop', 'stopped whenever the hero is off screen or the tab is hidden'],
