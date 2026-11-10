@@ -12,6 +12,7 @@ import { SiteHeader } from '@/components/layout/site-header';
 import { SkipLink } from '@/components/layout/skip-link';
 import { profile } from '@/data/profile';
 import { SITE_DESCRIPTION, SITE_NAME, siteUrl } from '@/lib/site';
+import { personAndSite, toJsonLd } from '@/lib/structured-data';
 
 const sans = Schibsted_Grotesk({ subsets: ['latin'], variable: '--font-schibsted' });
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-jetbrains' });
@@ -51,6 +52,10 @@ export default function RootLayout({ children }: RootLayoutProps) {
     >
       <body className="flex min-h-dvh flex-col">
         <SkipLink />
+        <script
+          dangerouslySetInnerHTML={{ __html: toJsonLd(personAndSite()) }}
+          type="application/ld+json"
+        />
         <Providers>
           <SiteHeader />
           <div className="flex flex-1 flex-col" id="main">

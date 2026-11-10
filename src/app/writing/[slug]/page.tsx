@@ -9,6 +9,7 @@ import { loadPostContent } from '@/lib/content/mdx';
 import { getNeighbours, getPost, getPosts } from '@/lib/content/posts';
 import { getProject } from '@/lib/content/projects';
 import { formatDate } from '@/lib/dates';
+import { blogPosting, toJsonLd } from '@/lib/structured-data';
 
 type PostPageProps = { params: Promise<{ slug: string }> };
 
@@ -54,6 +55,10 @@ export default async function PostPage({ params }: PostPageProps) {
 
   return (
     <main>
+      <script
+        dangerouslySetInnerHTML={{ __html: toJsonLd(blogPosting(post)) }}
+        type="application/ld+json"
+      />
       <header className="border-b border-separator grid-backdrop">
         <div className="mx-auto max-w-site px-4 pt-16 pb-12 sm:px-6 sm:pt-24">
           <p className="label-mono">
