@@ -1,8 +1,10 @@
 import Link from 'next/link';
 
 import { profile } from '@/data/profile';
+import { getCommands } from '@/lib/commands';
 import { NAV_ITEMS } from '@/lib/site';
 
+import { CommandMenu } from './command-menu';
 import { LocalClock } from './local-clock';
 import { MobileNav } from './mobile-nav';
 import { NavLink } from './nav-link';
@@ -40,6 +42,9 @@ export function SiteHeader() {
               <span className="relative size-1.5 rounded-full bg-success" />
             </span>
             {profile.availability.toLowerCase()}
+          </span>
+          <span className="hidden sm:inline-flex">
+            <CommandMenu commands={getCommands()} />
           </span>
           <ThemeToggle />
           <span className="md:hidden">
