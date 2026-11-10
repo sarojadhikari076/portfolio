@@ -1,0 +1,42 @@
+---
+title: GiftCart
+summary: An e-commerce platform with a NestJS API, a Next.js storefront, and a recommendation system that serves new customers as well as returning ones.
+role: Full-stack and ML
+period: '2024'
+status: archived
+stack:
+  - NestJS
+  - Prisma
+  - PostgreSQL
+  - Redis
+  - Stripe
+  - Next.js
+  - Python
+links:
+  repository: https://github.com/sarojadhikari076/giftcart-api
+order: 3
+---
+
+GiftCart is a complete shop: browse, cart, coupons, checkout with Stripe, and a birthday campaign that emails each customer a personal discount. It's three public repositories: the [API](https://github.com/sarojadhikari076/giftcart-api), the [storefront](https://github.com/sarojadhikari076/giftcart-frontend) and the [recommender](https://github.com/sarojadhikari076/product-recommendation).
+
+## The API
+
+A NestJS service on PostgreSQL through Prisma, split into modules for auth, users, products, categories, carts, coupons, orders, payments, FAQs and email.
+
+- **Auth** is Passport with a local strategy for sign-in and JWTs after it, plus a roles guard for admin routes.
+- **Email goes through a queue.** Bull on Redis sends it from a worker, so a slow SMTP server never holds up a request.
+- **The birthday campaign is a query, not a model.** In the week before a customer's birthday, until they redeem the coupon, the API picks products from their search history, the tags they keep returning to and their favourite category, ranked by rating, and falls back to featured products when there's nothing to go on.
+- **Payments** are Stripe, and requests are rate-limited with `@nestjs/throttler`.
+- **The contract is documented.** Swagger and Redoc are generated from the controllers, and the whole stack runs locally with Docker Compose.
+
+## The recommender
+
+The recommender is a separate study in Python on the Amazon Electronics ratings dataset. Recommendations have a cold-start problem: collaborative filtering needs history, and a new customer has none. So there are three approaches, one for each amount of history:
+
+1. **Rank-based** for someone new: the best-rated products with at least 50 ratings, so a handful of five-star reviews can't top the list.
+2. **User-to-user collaborative filtering** for someone with a little history: cosine similarity over the interaction matrix finds people like them, then recommends what they rated and this person hasn't.
+3. **Model-based collaborative filtering** for everyone else: the ratings matrix is stored as compressed sparse rows to keep memory down, factorised with SVD into 50 latent features, and evaluated by RMSE.
+
+## Looking back
+
+The two halves never met: the shop's picks are rule-based queries, and the models live in their own repository. Connecting them is the obvious next step, and I'd do it with a small service behind its own contract that the API calls, so the model can be retrained and redeployed without touching the shop.

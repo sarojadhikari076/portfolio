@@ -1,0 +1,28 @@
+---
+title: Baagh Chal
+summary: The Nepali board game of tigers and goats, playable in the browser. A weekend build with the rules engine in one place and an animated board.
+role: Side project
+period: '2025'
+status: live
+stack:
+  - Next.js
+  - React
+  - Tailwind CSS
+  - Framer Motion
+links:
+  live: https://baaghchal.vercel.app
+  repository: https://github.com/sarojadhikari076/baaghchal
+order: 4
+---
+
+Baagh Chal is a game I grew up playing in Nepal: tigers against goats on one board. In this version four tigers face thirty goats. The tigers win by capturing fifteen; the goats win by leaving every tiger with nowhere to move.
+
+## What's there
+
+- **The rules in one place.** Placement, moves to adjacent points, captures by jumping and both win conditions live in a single React context, so the board and the side panels render state and never decide anything.
+- **Two players, one device.** Goats are placed one per turn until all thirty are down, then both sides move.
+- **An animated board** with Framer Motion, and a game-over screen with the result.
+
+## What I'd add next
+
+The README promises online play and a leaderboard, and those aren't built. Doing them properly means moving the rules out of React into a pure module the server can also run, so a move is checked where it can't be faked. That refactor would come first.

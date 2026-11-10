@@ -1,0 +1,178 @@
+---
+title: Mela
+summary: Self-serve ticketing for festivals and independent events. A multi-tenant SaaS I designed and run on my own, from the hold query to the door scanner.
+role: Sole engineer
+period: '2026'
+status: live
+stack:
+  - NestJS
+  - Next.js
+  - PostgreSQL
+  - Prisma
+  - Redis
+  - BullMQ
+  - Stripe Connect
+  - HeroUI
+metrics:
+  - value: '18'
+    label: api modules
+  - value: '165'
+    label: api operations
+  - value: '164'
+    label: test files
+  - value: '412'
+    label: logged decisions
+links:
+  live: https://melatickets.com
+order: 1
+---
+
+import { MelaArchitecture } from '@/features/work/mela-architecture';
+
+Mela lets a festival organiser set up an event, connect their own Stripe account and start selling in minutes. Buyers see an all-in price before they reach the checkout, get a signed ticket by email, and walk through a gate where a phone checks it, even without signal.
+
+It is live on [melatickets.com](https://melatickets.com), and the whole buyer loop works there: paid checkout, ticket email, scan at the door. The repository is private for now, so the excerpts below are short and the paths are given for reference.
+
+## Why ticketing
+
+Ticketing looks like a CRUD app and isn't. The hard parts are the ones that only show up under pressure:
+
+- **On-sale spikes.** A few hundred people want the last fifty tickets in the same minute. Overselling by one is a refund, an apology and a person turned away at a gate.
+- **Money that isn't mine.** Payments go to each organiser's own Stripe account, with the platform's fee taken on the way. A missed webhook is a buyer who paid and got nothing.
+- **Gates with no signal.** Festival fields are where mobile data goes to die. The scanner has to work offline and still refuse a ticket that's been used at another gate.
+- **Many organisers, one database.** One tenant must never see another's orders, and the system has to keep that true as routes are added.
+- **UK GDPR.** A buyer can ask for their data or ask to be forgotten, and the financial records still have to add up afterwards.
+
+## How I work on it
+
+Mela is built with an AI-assisted workflow, and I'd rather say how than leave you to guess. Claude writes most of the code. I own the architecture, the decisions and what ships. In practice:
+
+- **Docs come first.** Twenty documents cover the product, the domain model, the critical flows and the standards. Every session starts by reading the ones for the area being changed.
+- **Decisions are written down.** The decision log has 412 entries, each with the alternative I rejected and why, so nothing gets relitigated by accident.
+- **Money, capacity and tenancy are mine to verify.** For that code I write or approve the tests first, read every line before it's pushed, and test it myself. The assistant never gets production credentials and never runs a production migration.
+- **Guardrails do the remembering.** Boundaries, coverage floors and budgets are enforced by CI rather than by anyone's memory, mine included. More on those below.
+
+<Callout label="why it matters">
+
+The interesting skill here isn't typing speed. It's deciding what the system should be, noticing when the code has drifted from it, and building the checks that catch the drift without me.
+
+</Callout>
+
+## Architecture
+
+<Figure caption="Mela in production. Three Next.js apps on Vercel, one NestJS image running as an HTTP process and a worker on Railway.">
+  <MelaArchitecture />
+</Figure>
+
+It's a **modular monolith**, not microservices. I've split a monolith into nine services for a team that needed to deploy independently. For one engineer and one database, the right answer was the opposite: the checkout has to turn holds into sales, write the order and record the event in a single transaction, and that's trivial inside one process and painful across five.
+
+The modules are still kept honest. dependency-cruiser enforces four rules: no cycles, other modules are only reachable through their `index.ts`, `domain/` folders hold plain business rules with no NestJS, Prisma or HTTP code, and `core/` never reaches up into a module. A test also checks that each module writes only to its own tables.
+
+## Six problems worth the detail
+
+### Selling the last ticket exactly once
+
+Capacity is never read and then written. Taking a hold is one conditional `UPDATE`, so the check and the write can't be separated by another buyer:
+
+```ts title="apps/api/src/modules/inventory/infrastructure/holds.repository.ts"
+const updated = await transaction.$executeRaw`
+  UPDATE inventory_pool
+  SET held = held + ${quantity}
+  WHERE id = ${poolId}::uuid
+    AND event_id = ${eventId}::uuid
+    AND organization_id = ${organizationId}::uuid
+    AND held + sold + ${quantity} <= capacity
+`;
+
+if (updated === 0) {
+  throw await this.whyNot(transaction, { organizationId, eventId, poolId });
+}
+```
+
+Underneath that, a `CHECK ("held" + "sold" <= "capacity")` constraint is the last line of defence. Pools are always updated in id order so two baskets can't deadlock each other, and the sweeper that expires abandoned holds claims them with `FOR UPDATE SKIP LOCKED`, so several sweepers can run without stepping on each other. A k6 script sends 100 buyers at a single ticket and fails unless exactly one of them gets it.
+
+### Tenants that can't see each other
+
+Isolation is enforced in three places, so a mistake in one is caught by another:
+
+1. **The schema.** Child rows reference `(id, organization_id)`, so a row can't point at a parent in another tenant.
+2. **The client.** Repositories reach tenant tables only through a Prisma `$extends` client that adds the organisation, and the staff member's event scope, to every query. It fails closed:
+
+```ts title="apps/api/src/core/tenancy/tenant-prisma.service.ts"
+// Failing closed: an operation nobody has thought about shouldn't run unscoped.
+throw new Error(`${operation} is not supported on the tenant client`);
+```
+
+3. **The tests.** An integration test reads the live route list, fails any controller method that has no policy, and generates an outsider test for every tenant route from the OpenAPI document. A new route is covered without anyone remembering to add it.
+
+### Events that can't get lost
+
+When an order is paid, tickets have to be issued and emailed. If the order commits and the process dies before the email job is queued, the buyer has paid for nothing. So the event is written in the same transaction as the change:
+
+```ts title="apps/api/src/core/outbox/outbox.ts"
+export async function writeOutboxEvent(
+  transaction: Prisma.TransactionClient,
+  topic: string,
+  payload: Prisma.InputJsonObject,
+): Promise<void> {
+  await transaction.outboxEvent.create({ data: { topic, payload } });
+}
+```
+
+A relay in the worker moves committed rows onto a BullMQ queue every five seconds. It uses the row's id as the job id, so a crash between enqueueing and marking the row published can't create a second job. Delivery is still at least once, so every handler is written to cope with seeing an event twice. [The outbox post](/writing/transactional-outbox-nestjs) goes through the whole path.
+
+### Payments that land once, even when Stripe retries
+
+Stripe delivers webhooks at least once, sometimes late and sometimes out of order. Each one is stored against a unique `(provider, provider_event_id)`, and its outbox event is written only if the row was new:
+
+```ts title="apps/api/src/modules/payments/infrastructure/webhook-events.repository.ts"
+const { count } = await transaction.webhookEvent.createMany({
+  data: { provider: PROVIDER, providerEventId, eventType, accountId, objectId },
+  skipDuplicates: true,
+});
+
+if (count > 0) {
+  await writeOutboxEvent(transaction, STRIPE_WEBHOOK_TOPIC, { providerEventId });
+}
+```
+
+The event's contents aren't trusted either. Completing a checkout asks Stripe for the payment again and checks three things: it came from the organiser's connected account, the amount matches the total the server calculated, and it belongs to this checkout. Every ten minutes a reconciliation job asks Stripe about payments that started and have no order, through the same path, so a lost webhook still ends in an order. If the tickets ran out while a late payment was in flight, the buyer is refunded automatically, fee included.
+
+### Tickets a phone can check offline
+
+A ticket's QR code carries its id and an Ed25519 signature over it. The signing key for each event is derived from one server secret with HKDF and never stored, so a database backup can't be used to forge tickets:
+
+```ts title="apps/api/src/modules/ticketing/domain/ticket-credential.ts"
+const seed = hkdfSync('sha256', secret, eventId, `ticket-signing:${keyId}`, SEED_BYTES);
+```
+
+The door app holds only public keys and verifies with WebCrypto, so a lost phone can check tickets but never make one. The scan queue and the guest manifest are encrypted in IndexedDB under a non-extractable AES-GCM key. A device may keep scanning offline for twelve hours after it last reached the server. When it syncs, a partial unique index decides admission, and a ticket admitted at two gates is flagged as a conflict instead of silently double-counted.
+
+### One live connection per browser, not per tab
+
+The dashboard updates over Server-Sent Events. Browsers allow six connections to one host over HTTP/1.1, so an organiser with a few tabs open would starve their own dashboard. One tab takes a Web Lock and holds the stream; the others hear from it over a `BroadcastChannel`, and when it closes the next tab takes over and resyncs.
+
+That design produced the bug I'd most like to tell you about in an interview. Each live signal triggered `router.refresh()`, which is a new transition. Under a steady stream of signals, each refresh outlasted the gap before the next one, so a navigation the user had asked for never committed and the address bar never changed. CI found it, because three test files share an organisation and each one's orders were live signals for the others. The fix was to make the refresh wait for the user: it now asks whether a navigation is in flight and takes the next quiet moment.
+
+## Guardrails
+
+| Gate                         | What it catches                                                                                                                                             |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 6 CI jobs                    | format, migrations, boundaries, lint, types, tests, build, OpenAPI drift, Docker image, secrets, dead code, duplication, browser tests, performance budgets |
+| Coverage floors              | 94% statements overall; 99% in inventory; 100% in the authorisation layer                                                                                   |
+| Real infrastructure in tests | 54 integration suites against PostgreSQL, PgBouncer in transaction mode and Redis, via Testcontainers                                                       |
+| Browser tests                | 31 Playwright specs in three shards, with axe checks for WCAG 2.2 AA                                                                                        |
+| Property tests               | Pricing in integer minor units: parts always sum to the total, nothing goes negative                                                                        |
+| Ratchets                     | ESLint warnings may fall per file, never rise; duplication capped at 1.9%                                                                                   |
+
+## What isn't done
+
+- **Storefront LCP.** The budget is 2.0 s on a mid-range phone and the event page measures 3.9 to 4.7 s. The trace says the cover image is waiting on request count and font bytes rather than script size, so that's where the next round goes.
+- **The oversell test against production.** It runs locally; the run against the deployment is still on the list.
+- **Later phases.** Payment plans, reserved seating and an AI assistant for organisers are designed and not built.
+- **Going public.** The repository opens once a trademark question about the name is settled.
+
+## What I'd do differently
+
+- **Write the boundary tests on day one.** The table-ownership test came after an audit found the refunds module writing `order.status`. Rules nobody checks decay, even when one person writes all the code.
+- **Make the LCP budget a failing gate from the first storefront page.** Today it warns at 2.0 s and fails only on a regression, because a gate set at the target would be red on every commit. Closing a gap later is harder than never opening it.
