@@ -63,8 +63,13 @@ export default function RootLayout({ children }: RootLayoutProps) {
           </div>
           <SiteFooter />
         </Providers>
-        <Analytics />
-        <SpeedInsights />
+        {/* Both are served from Vercel's edge, so anywhere else they would only 404. */}
+        {process.env.VERCEL ? (
+          <>
+            <Analytics />
+            <SpeedInsights />
+          </>
+        ) : null}
       </body>
     </html>
   );
