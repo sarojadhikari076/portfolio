@@ -11,7 +11,7 @@ const post = (slug: string, title: string, date: string): Post => ({
     title,
     description: 'A description long enough to pass the schema, about <tags> & "quotes".',
     publishedAt: new Date(`${date}T00:00:00Z`),
-    tags: ['postgres'],
+    tags: ['databases'],
     draft: false,
   },
 });

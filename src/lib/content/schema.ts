@@ -2,9 +2,20 @@ import { z } from 'zod';
 
 const isoDate = z.iso.date().transform((value) => new Date(`${value}T00:00:00Z`));
 
-const tag = z
-  .string()
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'Tags are lowercase and hyphenated, like `event-driven`.');
+/**
+ * A fixed set, so the topic filter stays one short row. Free-form tags sprawled to 22 for seven
+ * posts within a day of writing them.
+ */
+const tag = z.enum([
+  'architecture',
+  'backend',
+  'databases',
+  'devops',
+  'frontend',
+  'performance',
+  'security',
+  'tooling',
+]);
 
 export const postFrontmatter = z.strictObject({
   title: z.string().min(10).max(90),
@@ -32,6 +43,3 @@ export const projectFrontmatter = z.strictObject({
   /** Lower comes first. The flagship is 1. */
   order: z.number().int().positive(),
 });
-
-export type PostFrontmatter = z.infer<typeof postFrontmatter>;
-export type ProjectFrontmatter = z.infer<typeof projectFrontmatter>;
