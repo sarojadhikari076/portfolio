@@ -38,7 +38,6 @@ export function CommandMenu({ commands }: CommandMenuProps) {
     <>
       <Button
         aria-keyshortcuts={apple ? 'Meta+K' : 'Control+K'}
-        aria-label="Search and commands"
         className="font-mono text-xs text-muted"
         size="sm"
         variant="ghost"
@@ -47,6 +46,7 @@ export function CommandMenu({ commands }: CommandMenuProps) {
           setOpen(true);
         }}
       >
+        <span className="sr-only">Search and commands</span>
         <Kbd>
           <Kbd.Abbr keyValue={apple ? 'command' : 'ctrl'} />
           <Kbd.Content>K</Kbd.Content>
