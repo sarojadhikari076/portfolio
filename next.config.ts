@@ -14,7 +14,8 @@ const vercelLive = process.env.VERCEL_ENV === 'preview' ? ' https://vercel.live'
  */
 const contentSecurityPolicy = [
   "default-src 'self'",
-  `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ''}${vercelLive}`,
+  // In development, Vercel Analytics loads a debug build from its CDN instead of this origin.
+  `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval' https://va.vercel-scripts.com" : ''}${vercelLive}`,
   "style-src 'self' 'unsafe-inline'",
   `img-src 'self' data: blob:${vercelLive}`,
   "font-src 'self'",

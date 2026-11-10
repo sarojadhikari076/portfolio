@@ -1,2 +1,267 @@
 @import 'tailwindcss';
 @import '@heroui/styles';
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/*
+ * The "control room" theme. HeroUI reads every colour from these variables, so its components and
+ * this site's own markup are themed from one place. Dark is the default; light is a quiet paper
+ * variant for anyone who prefers it. Contrast pairs are measured, not eyeballed:
+ *
+ *   dark   foreground on background 15.7:1, muted 6.0:1, accent 9.5:1, ink on accent 9.2:1
+ *   light  foreground on background 16.9:1, muted 5.8:1, accent-ink 4.9:1, focus 3.6:1 (UI)
+ */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --radius: 0.25rem;
+  --field-radius: 0.25rem;
+
+  --background: oklch(15.4% 0.005 264.4);
+  --foreground: oklch(92.5% 0.007 88.6);
+  --muted: oklch(64.9% 0.011 261.8);
+
+  --surface: oklch(18.6% 0.009 264.3);
+  --surface-foreground: var(--foreground);
+  --surface-secondary: oklch(21.2% 0.011 260.7);
+  --surface-secondary-foreground: var(--foreground);
+  --surface-tertiary: oklch(24.2% 0.013 258.4);
+  --surface-tertiary-foreground: var(--foreground);
+  --overlay: oklch(20.3% 0.009 255.6);
+  --overlay-foreground: var(--foreground);
+
+  --default: oklch(24.2% 0.013 258.4);
+  --default-foreground: var(--foreground);
+
+  --accent: oklch(78.1% 0.167 72.1);
+  --accent-foreground: oklch(17.9% 0.019 70.3);
+  --focus: var(--accent);
+  --link: var(--foreground);
+
+  --border: oklch(26.4% 0.01 260.7);
+  --separator: oklch(23.4% 0.009 255.6);
+
+  --field-background: oklch(18.6% 0.009 264.3);
+  --field-foreground: var(--foreground);
+  --field-placeholder: var(--muted);
+
+  --success: oklch(68.5% 0.129 160.6);
+  --success-foreground: oklch(17.9% 0.019 160);
+  --warning: var(--accent);
+  --warning-foreground: var(--accent-foreground);
+  --danger: oklch(67.3% 0.179 24.3);
+  --danger-foreground: oklch(17.9% 0.019 24);
+
+  --backdrop: oklch(0% 0 0 / 0.6);
+  --scrollbar-thumb: oklch(100% 0 0 / 0.14);
+
+  /* Ours, not HeroUI's. */
+  --accent-ink: var(--accent);
+  --grid-line: oklch(100% 0 0 / 0.04);
+  --scene-edge: oklch(40% 0.01 260);
+  --scene-node: oklch(64.9% 0.011 261.8);
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+
+  --background: oklch(96.4% 0.005 95.1);
+  --foreground: oklch(18.2% 0.004 264.5);
+  --muted: oklch(48.5% 0.012 267.3);
+
+  --surface: oklch(98.5% 0.004 91.4);
+  --surface-secondary: oklch(94.5% 0.007 97.4);
+  --surface-tertiary: oklch(92.2% 0.008 91.5);
+  --overlay: oklch(100% 0 0);
+
+  --default: oklch(92.8% 0.008 91.5);
+
+  --focus: oklch(60.6% 0.136 65.3);
+
+  --border: oklch(89.2% 0.011 89.7);
+  --separator: oklch(91.6% 0.01 87.5);
+
+  --field-background: oklch(100% 0 0);
+
+  --success: oklch(50% 0.11 159.6);
+  --success-foreground: oklch(98% 0.01 160);
+  --danger: oklch(54.1% 0.181 26.9);
+  --danger-foreground: oklch(98% 0.01 27);
+
+  --backdrop: oklch(0% 0 0 / 0.35);
+  --scrollbar-thumb: oklch(0% 0 0 / 0.16);
+
+  --accent-ink: oklch(53.1% 0.119 65.1);
+  --grid-line: oklch(0% 0 0 / 0.05);
+  --scene-edge: oklch(80% 0.01 90);
+  --scene-node: oklch(48.5% 0.012 267.3);
+}
+
+@theme inline {
+  --font-sans: var(--font-schibsted), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, 'SFMono-Regular', monospace;
+
+  --color-accent-ink: var(--accent-ink);
+  --color-grid-line: var(--grid-line);
+
+  --container-measure: 68ch;
+  --container-site: 76rem;
+
+  --text-display: clamp(2.75rem, 1.6rem + 4.6vw, 5.25rem);
+  --text-display--line-height: 0.98;
+  --text-display--letter-spacing: -0.035em;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+    scroll-padding-top: 5rem;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+    font-feature-settings: 'ss01', 'cv11';
+  }
+
+  ::selection {
+    background: var(--accent);
+    color: var(--accent-foreground);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@utility grid-backdrop {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: -1px -1px;
+}
+
+/* Monospace chrome: labels, readouts, the status bar. Lowercase on purpose; it reads as output. */
+@utility label-mono {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  letter-spacing: 0.01em;
+  color: var(--muted);
+}
+
+/*
+ * HeroUI's prose styles are the base for MDX. These adjust it for long technical reading: a
+ * measured column, headings that leave room above, code that matches the rest of the chrome.
+ */
+@layer components {
+  .typography-prose {
+    font-size: 1.0625rem;
+    line-height: 1.75;
+    max-width: var(--container-measure);
+  }
+
+  .typography-prose > * + * {
+    margin-top: 1.25em;
+  }
+
+  .typography-prose :is(h2, h3) {
+    scroll-margin-top: 6rem;
+    letter-spacing: -0.02em;
+  }
+
+  .typography-prose h2 {
+    @apply mt-14 text-2xl;
+  }
+
+  .typography-prose h3 {
+    @apply mt-10 text-lg;
+  }
+
+  .typography-prose p,
+  .typography-prose li {
+    font-size: inherit;
+    line-height: inherit;
+  }
+
+  .typography-prose a {
+    @apply font-normal decoration-accent underline-offset-[0.2em] transition-colors hover:text-accent-ink;
+  }
+
+  .typography-prose strong {
+    @apply font-semibold;
+  }
+
+  .typography-prose :not(pre) > code {
+    @apply rounded-sm border border-border bg-surface px-1 py-px text-[0.85em];
+  }
+
+  .typography-prose figure[data-rehype-pretty-code-figure] {
+    @apply -mx-4 sm:mx-0;
+  }
+
+  .typography-prose pre {
+    @apply rounded-none border-y border-border bg-surface px-4 py-4 text-[0.8125rem] leading-6 sm:rounded-sm sm:border;
+  }
+
+  .typography-prose pre code {
+    @apply bg-transparent p-0 text-[inherit];
+  }
+
+  .typography-prose [data-rehype-pretty-code-title] {
+    @apply border-x border-t border-border bg-surface-secondary px-4 py-1.5 label-mono sm:rounded-t-sm;
+  }
+
+  .typography-prose [data-rehype-pretty-code-title] + pre {
+    @apply mt-0 sm:rounded-t-none;
+  }
+
+  .typography-prose blockquote {
+    @apply border-s-2 border-accent not-italic;
+  }
+
+  .typography-prose table {
+    @apply w-full border-collapse text-sm;
+  }
+
+  .typography-prose :is(th, td) {
+    @apply border-b border-border py-2 pe-4 text-start align-top;
+  }
+
+  .typography-prose th {
+    @apply label-mono font-normal;
+  }
+}
+
+/* Shiki emits both themes; show the one that matches the page. */
+[data-theme='dark'] [data-rehype-pretty-code-figure] :is(code, span) {
+  color: var(--shiki-dark);
+}
+
+[data-theme='light'] [data-rehype-pretty-code-figure] :is(code, span) {
+  color: var(--shiki-light);
+}
+
+@media print {
+  :root,
+  [data-theme='dark'] {
+    --background: white;
+    --foreground: black;
+    --muted: oklch(40% 0 0);
+    --border: oklch(85% 0 0);
+  }
+}
